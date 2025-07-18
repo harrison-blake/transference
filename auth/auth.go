@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"io/ioutil"
 )
 
 const tokenFilePath = "auth.json"
@@ -151,7 +152,9 @@ func (a *Authenticator) exchangeCodeForToken(code string) error {
 	}
 
 	var tokenResponse TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
+	body, err := ioutil.ReadAll(resp.Body)
+	err = json.Unmarshal(body, &tokenResponse)
+	if err != nil {
 		return fmt.Errorf("failed to decode token response: %w", err)
 	}
 
@@ -163,10 +166,10 @@ func (c *Config) setDefaultURLValues() {
 	values := url.Values{}
 	values.Add("response_type", "code")
 	values.Add("client_id", c.ClientID)
-	values.Add("scope", "playlist-read-private")
+	values.Add("scope", "playlist-read-private playlist-read-collaborative")
 	values.Add("redirect_uri", c.RedirectURI)
 	c.AuthURL.RawQuery = values.Encode()
-}
+} 
 
 func (c *Config) encodeClient() {
 	if c.ClientID != "" && c.ClientSecret != "" {
