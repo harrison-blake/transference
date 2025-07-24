@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,10 +13,20 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"io/ioutil"
 )
 
 const tokenFilePath = "auth.json"
+
+type Config struct {
+	ClientID      string
+	ClientSecret  string
+	AuthEndpoint  string
+	TokenEndpoint string
+	RedirectURI   string
+	EncodedClient string
+	Callback      string
+	AuthURL       *url.URL
+}
 
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -25,29 +36,23 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-
-type Config struct {
-	ClientID      string
-	ClientSecret  string
-	AuthEndpoint  string
-	TokenEndpoint string
-	RedirectURI   string
-	EncodedClient string
-	AuthURL       *url.URL
-}
-
 type Authenticator struct {
-	Conf  *Config
-	Token *TokenResponse
+	Conf   *Config
+	Token  *TokenResponse
+	Client *http.Client
 }
 
-func New() (*Config, error) {
+func (a *Authenticator) GetToken() string {
+	return a.Token.AccessToken
+}
+
+func DefaultSpotifyConifg() (*Config, error) {
 	conf := &Config{
 		ClientID:      os.Getenv("SPOTIFY_ID"),
 		ClientSecret:  os.Getenv("SPOTIFY_SECRET"),
-		AuthEndpoint:  os.Getenv("AUTH_ENDPOINT"),
-		TokenEndpoint: os.Getenv("TOKEN_ENDPOINT"),
-		RedirectURI:   os.Getenv("REDIRECT_URI"),
+		AuthEndpoint:  os.Getenv("SPOTIFY_AUTH_ENDPOINT"),
+		TokenEndpoint: os.Getenv("SPOTIFY_TOKEN_ENDPOINT"),
+		RedirectURI:   os.Getenv("SPOTIFY_REDIRECT_URI"),
 	}
 
 	authURL, err := url.Parse(conf.AuthEndpoint)
@@ -56,19 +61,62 @@ func New() (*Config, error) {
 	}
 	conf.AuthURL = authURL
 
-	conf.setDefaultURLValues()
+	redURL, err := url.Parse(conf.RedirectURI)
+	if err != nil {
+		return nil, err
+	}
+	conf.Callback = redURL.Path
+
+	conf.setDefaultSpotifyURLValues()
 	conf.encodeClient()
 
 	return conf, nil
 }
 
-func NewAuthenticator() (*Authenticator, error) {
-	conf, err := New()
+func DefaultYoutubeConifg() (*Config, error) {
+	conf := &Config{
+		ClientID:      os.Getenv("YOUTUBE_ID"),
+		ClientSecret:  os.Getenv("YOUTUBE_SECRET"),
+		AuthEndpoint:  os.Getenv("YOUTUBE_AUTH_ENDPOINT"),
+		TokenEndpoint: os.Getenv("YOUTUBE_TOKEN_ENDPOINT"),
+		RedirectURI:   os.Getenv("YOUTUBE_REDIRECT_URI"),
+		Callback:      os.Getenv("YOUTUBE_CALLBACK_PATH"),
+	}
+
+	authURL, err := url.Parse(conf.AuthEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	conf.AuthURL = authURL
+
+	redURL, err := url.Parse(conf.RedirectURI)
+	if err != nil {
+		return nil, err
+	}
+	conf.Callback = redURL.Path
+
+	conf.setDefaultYoutubeURLValues()
+	conf.encodeClient()
+
+	return conf, nil
+}
+
+func NewSpotifyAuthenticator() (*Authenticator, error) {
+	conf, err := DefaultSpotifyConifg()
 	if err != nil {
 		return nil, err
 	}
 
-	return &Authenticator{Conf: conf}, nil
+	return &Authenticator{Conf: conf, Client: &http.Client{}}, nil
+}
+
+func NewYoutubeAuthenticator() (*Authenticator, error) {
+	conf, err := DefaultYoutubeConifg()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Authenticator{Conf: conf, Client: &http.Client{}}, nil
 }
 
 func (a *Authenticator) PerformAuthFlow() error {
@@ -78,7 +126,7 @@ func (a *Authenticator) PerformAuthFlow() error {
 	server := &http.Server{Addr: ":8080"}
 	var serverErr error
 
-	http.HandleFunc("/callback/spotify", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc(a.Conf.Callback, func(w http.ResponseWriter, r *http.Request) {
 		defer wg.Done()
 		code := r.URL.Query().Get("code")
 		if code == "" {
@@ -127,7 +175,6 @@ func (a *Authenticator) PerformAuthFlow() error {
 }
 
 func (a *Authenticator) exchangeCodeForToken(code string) error {
-	client := &http.Client{}
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
@@ -141,7 +188,7 @@ func (a *Authenticator) exchangeCodeForToken(code string) error {
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Authorization", "Basic " + a.Conf.EncodedClient)
 
-	resp, err := client.Do(req)
+	resp, err := a.Client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send token request: %w", err)
 	}
@@ -162,14 +209,23 @@ func (a *Authenticator) exchangeCodeForToken(code string) error {
 	return nil
 }
 
-func (c *Config) setDefaultURLValues() {
+func (c *Config) setDefaultSpotifyURLValues() {
 	values := url.Values{}
 	values.Add("response_type", "code")
 	values.Add("client_id", c.ClientID)
 	values.Add("scope", "playlist-read-private playlist-read-collaborative")
 	values.Add("redirect_uri", c.RedirectURI)
 	c.AuthURL.RawQuery = values.Encode()
-} 
+}
+
+func (c *Config) setDefaultYoutubeURLValues() {
+	values := url.Values{}
+	values.Add("response_type", "code")
+	values.Add("client_id", c.ClientID)
+	values.Add("scope", "https://www.googleapis.com/auth/youtube")
+	values.Add("redirect_uri", c.RedirectURI)
+	c.AuthURL.RawQuery = values.Encode()
+}
 
 func (c *Config) encodeClient() {
 	if c.ClientID != "" && c.ClientSecret != "" {
